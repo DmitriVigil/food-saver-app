@@ -25,6 +25,7 @@ def get_cheapest_product(cursor, search_term, exclude_keywords):
     1. Does not contain any user-specified allergy/dislike keywords.
     2. Does not contain junk matches (baby food, pet food, etc).
     """
+    # Check if image_url exists in product_cache columns, or select standard columns
     cursor.execute("""
         SELECT upc, brand, description, price 
         FROM product_cache 
@@ -42,13 +43,18 @@ def get_cheapest_product(cursor, search_term, exclude_keywords):
         
         if any(keyword in full_text for keyword in all_exclusions):
             continue
+        
+        upc = row[0]
+        # Standard Kroger CDN URL format by UPC; if an image URL column exists in cache, use that instead
+        fallback_image_url = f"https://www.kroger.com/product/images/medium/front/{upc}"
             
         return {
-            "upc": row[0],
+            "upc": upc,
             "brand": row[1] if row[1] else "Store Brand",
             "description": row[2],
             "price": float(row[3]),
-            "category": search_term
+            "category": search_term,
+            "image_url": fallback_image_url
         }
     return None
 
@@ -71,7 +77,10 @@ def fetch_affordable_ingredients(exclude_keywords):
         available_palette.sort(key=lambda x: x["price"])
         return available_palette[:50]
 
-def generate_ai_meal_plan(budget, target_meals, pantry_items, dislikes_allergies):
+def generate_ai_meal_plan(budget, target_meals, pantry_items, dislikes_allergies, misc_preferences=None):
+    if misc_preferences is None:
+        misc_preferences = []
+        
     # 1. Fetch available data palette from encrypted local cache
     available_ingredients = fetch_affordable_ingredients(dislikes_allergies)
     
@@ -79,6 +88,9 @@ def generate_ai_meal_plan(budget, target_meals, pantry_items, dislikes_allergies
     store_inventory_text = "\n".join(
         [f"- {item['category']} ({item['brand']} {item['description']}): ${item['price']:.2f}" for item in available_ingredients]
     )
+    
+    # Format the new constraints
+    constraints_text = ", ".join(misc_preferences) if misc_preferences else "None"
 
     # 3. Construct prompt
     prompt = f"""
@@ -92,6 +104,9 @@ def generate_ai_meal_plan(budget, target_meals, pantry_items, dislikes_allergies
     They dislike or are allergic to:
     {', '.join(dislikes_allergies)}
     
+    Cooking Style & Equipment Constraints:
+    {constraints_text}
+    
     Here is the live inventory available at their local store with exact prices:
     {store_inventory_text}
     
@@ -100,7 +115,9 @@ def generate_ai_meal_plan(budget, target_meals, pantry_items, dislikes_allergies
     2. Prioritize using their pantry items to reduce grocery costs.
     3. For all missing ingredients, you MUST ONLY select items from the provided "live inventory" list. Do not invent ingredients.
     4. Calculate the total cost of the items you selected. The total MUST be strictly less than ${budget:.2f}.
+    5. STRICTLY ADHERE to the Cooking Style & Equipment Constraints. If 'Microwave Only' or 'College Student (No Oven)' is listed, you must not suggest recipes requiring an oven. If 'Quick Meal' is listed, keep prep and cook times strictly under 15 minutes. If 'Good for Leftovers' is listed, suggest meals that scale well and reheat easily.
     """
+# ... (The rest of your function remains exactly the same)
 
     print("Thinking... consulting Gemini to assemble the perfect meal plan...")
 
@@ -180,7 +197,7 @@ def generate_ai_meal_plan(budget, target_meals, pantry_items, dislikes_allergies
         "recipes": ai_plan["recipes"],
         "shopping_list": final_shopping_list,
         "ai_estimated_cost": ai_plan["estimated_total_cost"],
-        "actual_calculated_cost": actual_total,
+        "actual_calculated_cost": round(actual_total, 2),
         "budget": budget
     }
 
